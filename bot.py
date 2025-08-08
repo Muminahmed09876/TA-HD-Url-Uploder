@@ -11,7 +11,7 @@ from pyrogram.types import Message
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 API_ID = int(os.getenv("API_ID", "0"))
 API_HASH = os.getenv("API_HASH")
-ADMIN_IDS = set(int(x) for x in os.getenv("ADMIN_IDS", "").split(","))
+ADMIN_IDS = set(int(x) for x in os.getenv("ADMIN_IDS", "").split(",") if x.strip())
 
 if not BOT_TOKEN or not API_ID or not API_HASH or not ADMIN_IDS:
     print("Error: BOT_TOKEN, API_ID, API_HASH or ADMIN_IDS environment variables missing!")
@@ -53,7 +53,7 @@ def convert_to_mp4(input_path, output_path):
     result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     return result.returncode == 0
 
-# Admin only filter
+# Admin only filter decorator
 def admin_only(func):
     async def wrapper(client, message):
         user_id = message.from_user.id if message.from_user else None
@@ -63,20 +63,19 @@ def admin_only(func):
         await func(client, message)
     return wrapper
 
-# Start command
-@app.on_message(filters.command("start"))
+# Store rename and thumbnail info per user in memory
+user_data = {}
+
+@app.on_message(filters.command("start") & filters.private)
 async def start_handler(client, message: Message):
     await message.reply_text(
         "👋 TA HD URL Uploader Bot\n\n"
-        "Send me a direct file URL or Google Drive link and I'll upload it for you.\n"
+        "Send me a direct file URL or Google Drive link and I'll upload it for you.\n\n"
         "Commands:\n"
         "/rename newfilename.ext - Rename next upload\n"
-        "/setthumb - Send an image to set as thumbnail\n"
+        "/setthumb - Reply to an image to set thumbnail\n\n"
         "Only admins can use this bot."
     )
-
-# Store rename and thumbnail info per user
-user_data = {}
 
 @app.on_message(filters.command("rename") & filters.private)
 @admin_only
@@ -93,7 +92,6 @@ async def rename_handler(client, message: Message):
 @admin_only
 async def setthumb_handler(client, message: Message):
     if message.reply_to_message and message.reply_to_message.photo:
-        # Download photo as thumbnail
         photo = message.reply_to_message.photo
         thumb_path = f"thumb_{message.from_user.id}.jpg"
         await client.download_media(photo.file_id, file_name=thumb_path)
@@ -103,12 +101,11 @@ async def setthumb_handler(client, message: Message):
     else:
         await message.reply("Please reply to a photo to set thumbnail.")
 
-@app.on_message(filters.private & filters.text & ~filters.command)
+@app.on_message(filters.private & filters.text & ~filters.command())
 @admin_only
 async def url_handler(client, message: Message):
     url = message.text.strip()
 
-    # Basic URL check
     if not (url.startswith("http://") or url.startswith("https://")):
         await message.reply("❌ Please send a valid URL.")
         return
@@ -117,7 +114,6 @@ async def url_handler(client, message: Message):
 
     tmpdir = tempfile.mkdtemp()
     try:
-        # Guess filename from URL
         filename = url.split("/")[-1].split("?")[0]
         if not filename:
             filename = "file"
@@ -136,9 +132,8 @@ async def url_handler(client, message: Message):
             shutil.move(download_path, download_path_renamed)
             download_path = download_path_renamed
 
-        # Check if file is video
+        # Video check & convert
         if is_video(filename):
-            # Convert video to mp4 if not already mp4
             if not filename.lower().endswith(".mp4"):
                 converted_path = os.path.join(tmpdir, "converted.mp4")
                 await message.reply("🔄 Converting video to mp4 format...")
@@ -150,17 +145,17 @@ async def url_handler(client, message: Message):
                     await message.reply("❌ Video conversion failed, uploading original file.")
 
         thumb_path = user_data.get(message.from_user.id, {}).get('thumb')
+        if thumb_path and not os.path.exists(thumb_path):
+            thumb_path = None
 
         await message.reply("📤 Uploading file to Telegram...")
         await client.send_document(
             chat_id=message.chat.id,
             document=download_path,
-            thumb=thumb_path if thumb_path and os.path.exists(thumb_path) else None,
+            thumb=thumb_path,
             file_name=filename,
             disable_notification=True,
-            progress=None
         )
-
         await message.reply("✅ Upload complete!")
 
     except Exception as e:
