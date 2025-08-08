@@ -1,10 +1,30 @@
-# TA-HD-Url-Uploder
-TA HD Url Uploader
-# Telegram File Downloader Bot
+# 🎥 TA HD URL Uploader Bot
 
-এই বট দিয়ে Google Drive বা যেকোনো ডিরেক্ট URL থেকে ফাইল ডাউনলোড করে Telegram-এ পাঠানো যায়।
+A Telegram bot that uploads files/videos from **Direct URLs** and **Google Drive links** to Telegram.  
+Special feature:  
+- Any video format will be **auto-converted to `.mp4`** before upload.  
+- Non-video files are uploaded as-is with original name.  
+- Only admin users can use the bot.
 
-## সেটআপ
+---
 
-1. Python 3.10+ ইনস্টল করতে হবে।
-2. লাইব্রেরি ইনস্টল করুন:
+## ✨ Features
+- 📥 **Direct URL Upload**  
+- ☁ **Google Drive URL Upload**  
+- 🎞 **Auto Convert Videos to .mp4**  
+- 🖼 **Custom Thumbnail Support**  
+- 📝 **File Rename Option**  
+- 🔒 **Only Admin Access**  
+- 📌 **mp4 video upload only for videos, others keep original name**  
+
+---
+
+## 🛠 Requirements
+- Python 3.11+
+- Telegram API ID & API Hash → [my.telegram.org](https://my.telegram.org) থেকে নিন  
+- Telegram Bot Token → [BotFather](https://t.me/BotFather) থেকে নিন  
+- Admin Telegram User ID → [@userinfobot](https://t.me/userinfobot) থেকে নিন  
+
+---
+
+## 📂 Project Structure
