@@ -1,5 +1,4 @@
-pyrogram
-tgcrypto
+python-telegram-bot==20.8
 requests
 gdown
 ffmpeg-python
