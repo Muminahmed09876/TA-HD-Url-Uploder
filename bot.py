@@ -1,20 +1,23 @@
 import os
 import requests
-import time
 from urllib.parse import urlparse, parse_qs
-
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, Bot
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
     MessageHandler,
     CallbackQueryHandler,
-    ConversationHandler,
     ContextTypes,
+    ConversationHandler,
     filters
 )
+from aiohttp import web
+import asyncio
+import time
 
-TOKEN = os.getenv("TOKEN")  # অবশ্যই environment variable হিসেবে TOKEN সেট করতে হবে
+TOKEN = os.getenv("TOKEN")
+PORT = int(os.getenv("PORT", "8080"))
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # তোমার https URL + বট টোকেনসহ (যেমন: https://yourdomain.com/<token>)
 
 WAITING_FOR_URL, WAITING_FOR_CHOICE = range(2)
 DOWNLOAD_FOLDER = "downloads"
@@ -188,8 +191,29 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     return ConversationHandler.END
 
 
-def main():
-    app = ApplicationBuilder().token(TOKEN).build()
+async def handle_webhook(request):
+    # Telegram থেকে POST করা আপডেট পড়বে
+    if request.match_info.get('token') != TOKEN:
+        return web.Response(status=403)
+
+    data = await request.json()
+    update = Update.de_json(data, bot)
+    await application.update_queue.put(update)
+    return web.Response(status=200)
+
+
+async def on_startup(app):
+    webhook_url = WEBHOOK_URL
+    await bot.set_webhook(webhook_url)
+
+
+async def on_shutdown(app):
+    await bot.delete_webhook()
+
+
+if __name__ == "__main__":
+    bot = Bot(token=TOKEN)
+    application = ApplicationBuilder().bot(bot).build()
 
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
@@ -200,11 +224,14 @@ def main():
         fallbacks=[CommandHandler("cancel", cancel)],
     )
 
-    app.add_handler(conv_handler)
+    application.add_handler(conv_handler)
 
-    print("Bot started...")
-    app.run_polling()
+    # aiohttp ওয়েব সার্ভার সেটআপ
+    app = web.Application()
+    app.router.add_post(f"/{TOKEN}", handle_webhook)
 
+    app.on_startup.append(on_startup)
+    app.on_shutdown.append(on_shutdown)
 
-if __name__ == "__main__":
-    main()
+    # Render এ PORT এ লিসেন করবে
+    web.run_app(app, port=PORT)
