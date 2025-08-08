@@ -13,7 +13,7 @@ from telegram.ext import (
     filters
 )
 
-TOKEN = os.getenv("TOKEN")  # environment variable থেকে নেয়া হবে
+TOKEN = os.getenv("TOKEN")  # Heroku বা অন্য কোথাও environment variable হিসেবে সেট করতে হবে
 
 WAITING_FOR_URL, = range(1)
 DOWNLOAD_FOLDER = "downloads"
@@ -79,30 +79,37 @@ async def download_with_progress(
         f"📥 ডাউনলোড শুরু হয়েছে...\nফাইল সাইজ: {format_size(total_size)}\nProgress: 0%"
     )
 
+    chunk_count = 0
     with open(destination, "wb") as f:
         for chunk in response.iter_content(chunk_size):
             if chunk:
                 f.write(chunk)
                 downloaded += len(chunk)
-                elapsed_time = time.time() - start_time
-                speed = downloaded / elapsed_time if elapsed_time > 0 else 0
-                percent = (downloaded / total_size) * 100 if total_size else 0
+                chunk_count += 1
 
-                bar_length = 20
-                filled_length = int(bar_length * percent // 100)
-                bar = "█" * filled_length + "-" * (bar_length - filled_length)
+                if chunk_count % 10 == 0 or downloaded == total_size:
+                    elapsed_time = time.time() - start_time
+                    speed = downloaded / elapsed_time if elapsed_time > 0 else 0
+                    percent = (downloaded / total_size) * 100 if total_size else 0
 
-                await context.bot.edit_message_text(
-                    chat_id=progress_msg.chat_id,
-                    message_id=progress_msg.message_id,
-                    text=(
-                        f"📥 ডাউনলোড হচ্ছে...\n"
-                        f"ফাইল সাইজ: {format_size(total_size)}\n"
-                        f"প্রগতি: [{bar}] {percent:.2f}%\n"
-                        f"ডাউনলোড হয়েছে: {format_size(downloaded)}\n"
-                        f"গতি: {format_size(speed)}/সেকেন্ড"
-                    )
-                )
+                    bar_length = 20
+                    filled_length = int(bar_length * percent // 100)
+                    bar = "█" * filled_length + "-" * (bar_length - filled_length)
+
+                    try:
+                        await context.bot.edit_message_text(
+                            chat_id=progress_msg.chat_id,
+                            message_id=progress_msg.message_id,
+                            text=(
+                                f"📥 ডাউনলোড হচ্ছে...\n"
+                                f"ফাইল সাইজ: {format_size(total_size)}\n"
+                                f"প্রগতি: [{bar}] {percent:.2f}%\n"
+                                f"ডাউনলোড হয়েছে: {format_size(downloaded)}\n"
+                                f"গতি: {format_size(speed)}/সেকেন্ড"
+                            )
+                        )
+                    except Exception:
+                        pass
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -157,10 +164,6 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 
 def main():
-    if not TOKEN:
-        print("Error: BOT Token পাওয়া যায়নি! environment variable 'TOKEN' সেট করতে হবে।")
-        return
-
     app = ApplicationBuilder().token(TOKEN).build()
 
     conv_handler = ConversationHandler(
