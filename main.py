@@ -3,7 +3,7 @@ import requests
 import time
 from urllib.parse import urlparse, parse_qs
 
-from telegram import Update
+from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -13,9 +13,9 @@ from telegram.ext import (
     filters
 )
 
-TOKEN = os.getenv("TOKEN")  # Heroku বা অন্য কোথাও environment variable হিসেবে সেট করতে হবে
+TOKEN = os.getenv("TOKEN")  # Environment variable হিসেবে TOKEN সেট করতে হবে
 
-WAITING_FOR_URL, = range(1)
+WAITING_FOR_CHOICE, WAITING_FOR_URL = range(2)
 DOWNLOAD_FOLDER = "downloads"
 os.makedirs(DOWNLOAD_FOLDER, exist_ok=True)
 
@@ -113,7 +113,21 @@ async def download_with_progress(
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    await update.message.reply_text("ফাইলের URL দিন (Google Drive বা ডিরেক্ট লিংক)।")
+    reply_keyboard = [["Send as Video", "Send as Document"]]
+    await update.message.reply_text(
+        "ফাইল কিভাবে পাঠাতে চান?\n\nSend as Video বা Send as Document বাটন থেকে সিলেক্ট করুন।",
+        reply_markup=ReplyKeyboardMarkup(reply_keyboard, one_time_keyboard=True)
+    )
+    return WAITING_FOR_CHOICE
+
+
+async def receive_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    choice = update.message.text
+    if choice not in ["Send as Video", "Send as Document"]:
+        await update.message.reply_text("সঠিক অপশন সিলেক্ট করুন।")
+        return WAITING_FOR_CHOICE
+    context.user_data['send_as_video'] = (choice == "Send as Video")
+    await update.message.reply_text("এখন ফাইলের URL দিন:", reply_markup=ReplyKeyboardRemove())
     return WAITING_FOR_URL
 
 
@@ -132,8 +146,10 @@ async def receive_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
         await update.message.reply_text("✅ ডাউনলোড সম্পন্ন হয়েছে, Telegram-এ পাঠানো হচ্ছে...")
 
         size_in_mb = os.path.getsize(destination_path) / (1024 * 1024)
+        send_as_video = context.user_data.get('send_as_video', False)
+
         with open(destination_path, "rb") as file:
-            if filename.lower().endswith((".mp4", ".mkv", ".avi", ".mov")) and size_in_mb < 50:
+            if send_as_video and filename.lower().endswith((".mp4", ".mkv", ".avi", ".mov")) and size_in_mb < 50:
                 await context.bot.send_video(
                     chat_id=update.message.chat_id,
                     video=file,
@@ -155,7 +171,8 @@ async def receive_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
         if os.path.exists(destination_path):
             os.remove(destination_path)
 
-    return WAITING_FOR_URL
+    # ইউজারকে আবার অপশন দিতে চাইলে নিচের লাইন
+    return WAITING_FOR_CHOICE
 
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -169,9 +186,8 @@ def main():
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
         states={
-            WAITING_FOR_URL: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, receive_url)
-            ],
+            WAITING_FOR_CHOICE: [MessageHandler(filters.Regex("^(Send as Video|Send as Document)$"), receive_choice)],
+            WAITING_FOR_URL: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_url)],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
     )
