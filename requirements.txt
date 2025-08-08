@@ -1,4 +1,5 @@
-python-telegram-bot==20.8
+pyrogram
+tgcrypto
 aiohttp
 requests
 gdown
