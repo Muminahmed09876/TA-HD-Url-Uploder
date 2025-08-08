@@ -1,3 +1,11 @@
-__pycache__/
-downloads/
+# Environment file
 .env
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# System files
+.DS_Store
+Thumbs.db
