@@ -1,237 +1,174 @@
 import os
-import requests
-from urllib.parse import urlparse, parse_qs
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, Bot
-from telegram.ext import (
-    ApplicationBuilder,
-    CommandHandler,
-    MessageHandler,
-    CallbackQueryHandler,
-    ContextTypes,
-    ConversationHandler,
-    filters
-)
-from aiohttp import web
 import asyncio
-import time
+import aiohttp
+import tempfile
+import shutil
+import subprocess
 
-TOKEN = os.getenv("TOKEN")
-PORT = int(os.getenv("PORT", "8080"))
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # তোমার https URL + বট টোকেনসহ (যেমন: https://yourdomain.com/<token>)
+from pyrogram import Client, filters
+from pyrogram.types import Message
 
-WAITING_FOR_URL, WAITING_FOR_CHOICE = range(2)
-DOWNLOAD_FOLDER = "downloads"
-os.makedirs(DOWNLOAD_FOLDER, exist_ok=True)
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+API_ID = int(os.getenv("API_ID", "0"))
+API_HASH = os.getenv("API_HASH")
+ADMIN_IDS = set(int(x) for x in os.getenv("ADMIN_IDS", "").split(","))
 
+if not BOT_TOKEN or not API_ID or not API_HASH or not ADMIN_IDS:
+    print("Error: BOT_TOKEN, API_ID, API_HASH or ADMIN_IDS environment variables missing!")
+    exit(1)
 
-def extract_file_id(drive_url: str) -> str | None:
-    parsed = urlparse(drive_url)
-    if "drive.google.com" not in parsed.netloc:
-        return None
-    if "/file/d/" in parsed.path:
-        parts = parsed.path.split('/')
-        try:
-            return parts[3]
-        except IndexError:
-            return None
-    if "id=" in parsed.query:
-        qs = parse_qs(parsed.query)
-        return qs.get("id", [None])[0]
-    return None
+app = Client("ta_hd_uploader_bot", bot_token=BOT_TOKEN, api_id=API_ID, api_hash=API_HASH)
 
+# Helper function to download file from url
+async def download_file(url: str, file_path: str):
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url) as resp:
+            if resp.status != 200:
+                return False
+            with open(file_path, "wb") as f:
+                while True:
+                    chunk = await resp.content.read(1024*1024)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+    return True
 
-def get_confirm_token(response: requests.Response) -> str | None:
-    for key, value in response.cookies.items():
-        if key.startswith('download_warning'):
-            return value
-    return None
+# Check if file is a video (by extension)
+def is_video(filename):
+    video_ext = ['.mp4', '.mkv', '.mov', '.avi', '.flv', '.wmv', '.webm']
+    return any(filename.lower().endswith(ext) for ext in video_ext)
 
+# Convert video to mp4 using ffmpeg
+def convert_to_mp4(input_path, output_path):
+    cmd = [
+        "ffmpeg",
+        "-i", input_path,
+        "-c:v", "libx264",
+        "-preset", "fast",
+        "-c:a", "aac",
+        "-movflags", "+faststart",
+        "-y",
+        output_path
+    ]
+    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    return result.returncode == 0
 
-def format_size(size_bytes: int) -> str:
-    for unit in ['B', 'KB', 'MB', 'GB']:
-        if size_bytes < 1024:
-            return f"{size_bytes:.2f} {unit}"
-        size_bytes /= 1024
-    return f"{size_bytes:.2f} TB"
+# Admin only filter
+def admin_only(func):
+    async def wrapper(client, message):
+        user_id = message.from_user.id if message.from_user else None
+        if user_id not in ADMIN_IDS:
+            await message.reply("❌ You are not authorized to use this bot.")
+            return
+        await func(client, message)
+    return wrapper
 
-
-async def download_with_progress(
-    url: str,
-    destination: str,
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-    is_gdrive: bool = False,
-    file_id: str | None = None
-):
-    session = requests.Session()
-    if is_gdrive and file_id:
-        base_url = "https://docs.google.com/uc?export=download"
-        response = session.get(base_url, params={'id': file_id}, stream=True)
-        token = get_confirm_token(response)
-        if token:
-            params = {'id': file_id, 'confirm': token}
-            response = session.get(base_url, params=params, stream=True)
-    else:
-        response = session.get(url, stream=True)
-
-    total_size = int(response.headers.get('Content-Length', 0))
-    downloaded = 0
-    chunk_size = 32768
-    start_time = time.time()
-
-    progress_msg = await update.message.reply_text(
-        f"📥 ডাউনলোড শুরু হয়েছে...\nফাইল সাইজ: {format_size(total_size)}\nProgress: 0%"
+# Start command
+@app.on_message(filters.command("start"))
+async def start_handler(client, message: Message):
+    await message.reply_text(
+        "👋 TA HD URL Uploader Bot\n\n"
+        "Send me a direct file URL or Google Drive link and I'll upload it for you.\n"
+        "Commands:\n"
+        "/rename newfilename.ext - Rename next upload\n"
+        "/setthumb - Send an image to set as thumbnail\n"
+        "Only admins can use this bot."
     )
 
-    chunk_count = 0
-    with open(destination, "wb") as f:
-        for chunk in response.iter_content(chunk_size):
-            if chunk:
-                f.write(chunk)
-                downloaded += len(chunk)
-                chunk_count += 1
+# Store rename and thumbnail info per user
+user_data = {}
 
-                if chunk_count % 10 == 0 or downloaded == total_size:
-                    elapsed_time = time.time() - start_time
-                    speed = downloaded / elapsed_time if elapsed_time > 0 else 0
-                    percent = (downloaded / total_size) * 100 if total_size else 0
+@app.on_message(filters.command("rename") & filters.private)
+@admin_only
+async def rename_handler(client, message: Message):
+    if len(message.command) < 2:
+        await message.reply("Usage: /rename newfilename.ext")
+        return
+    newname = message.text.split(None,1)[1].strip()
+    user_data[message.from_user.id] = user_data.get(message.from_user.id, {})
+    user_data[message.from_user.id]['rename'] = newname
+    await message.reply(f"✅ Next uploaded file will be renamed to: {newname}")
 
-                    bar_length = 20
-                    filled_length = int(bar_length * percent // 100)
-                    bar = "█" * filled_length + "-" * (bar_length - filled_length)
+@app.on_message(filters.command("setthumb") & filters.private)
+@admin_only
+async def setthumb_handler(client, message: Message):
+    if message.reply_to_message and message.reply_to_message.photo:
+        # Download photo as thumbnail
+        photo = message.reply_to_message.photo
+        thumb_path = f"thumb_{message.from_user.id}.jpg"
+        await client.download_media(photo.file_id, file_name=thumb_path)
+        user_data[message.from_user.id] = user_data.get(message.from_user.id, {})
+        user_data[message.from_user.id]['thumb'] = thumb_path
+        await message.reply("✅ Thumbnail image set successfully!")
+    else:
+        await message.reply("Please reply to a photo to set thumbnail.")
 
-                    try:
-                        await context.bot.edit_message_text(
-                            chat_id=progress_msg.chat_id,
-                            message_id=progress_msg.message_id,
-                            text=(
-                                f"📥 ডাউনলোড হচ্ছে...\n"
-                                f"ফাইল সাইজ: {format_size(total_size)}\n"
-                                f"প্রগতি: [{bar}] {percent:.2f}%\n"
-                                f"ডাউনলোড হয়েছে: {format_size(downloaded)}\n"
-                                f"গতি: {format_size(speed)}/সেকেন্ড"
-                            )
-                        )
-                    except Exception:
-                        pass
+@app.on_message(filters.private & filters.text & ~filters.command)
+@admin_only
+async def url_handler(client, message: Message):
+    url = message.text.strip()
 
+    # Basic URL check
+    if not (url.startswith("http://") or url.startswith("https://")):
+        await message.reply("❌ Please send a valid URL.")
+        return
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    await update.message.reply_text("ফাইলের URL দিন (Google Drive বা ডিরেক্ট লিংক)।")
-    return WAITING_FOR_URL
+    await message.reply("⏳ Downloading file... Please wait.")
 
-
-async def receive_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    url = update.message.text.strip()
-    context.user_data['download_url'] = url
-
-    keyboard = [
-        [
-            InlineKeyboardButton("ভিডিও হিসেবে পাঠাও", callback_data='send_video'),
-            InlineKeyboardButton("ডকুমেন্ট হিসেবে পাঠাও", callback_data='send_document'),
-        ]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-
-    await update.message.reply_text("কিভাবে পাঠাতে চান?", reply_markup=reply_markup)
-    return WAITING_FOR_CHOICE
-
-
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    query = update.callback_query
-    await query.answer()
-
-    choice = query.data  # 'send_video' or 'send_document'
-    url = context.user_data.get('download_url')
-
-    if not url:
-        await query.edit_message_text("URL পাওয়া যায়নি, দয়া করে /start দিয়ে আবার শুরু করুন।")
-        return ConversationHandler.END
-
-    filename = os.path.basename(urlparse(url).path) or "downloaded_file"
-    destination_path = os.path.join(DOWNLOAD_FOLDER, filename)
-    file_id = extract_file_id(url)
-
+    tmpdir = tempfile.mkdtemp()
     try:
-        if file_id:
-            await download_with_progress(url, destination_path, update, context, is_gdrive=True, file_id=file_id)
-        else:
-            await download_with_progress(url, destination_path, update, context, is_gdrive=False)
+        # Guess filename from URL
+        filename = url.split("/")[-1].split("?")[0]
+        if not filename:
+            filename = "file"
 
-        size_in_mb = os.path.getsize(destination_path) / (1024 * 1024)
+        download_path = os.path.join(tmpdir, filename)
+        success = await download_file(url, download_path)
+        if not success:
+            await message.reply("❌ Failed to download the file.")
+            return
 
-        with open(destination_path, "rb") as file:
-            if choice == 'send_video' and filename.lower().endswith((".mp4", ".mkv", ".avi", ".mov")) and size_in_mb < 50:
-                await context.bot.send_video(
-                    chat_id=query.message.chat_id,
-                    video=file,
-                    caption="আপনার ভিডিও"
-                )
-            else:
-                await context.bot.send_document(
-                    chat_id=query.message.chat_id,
-                    document=file,
-                    caption="আপনার ফাইল"
-                )
+        # Rename if requested
+        rename_name = user_data.get(message.from_user.id, {}).pop('rename', None)
+        if rename_name:
+            filename = rename_name
+            download_path_renamed = os.path.join(tmpdir, filename)
+            shutil.move(download_path, download_path_renamed)
+            download_path = download_path_renamed
 
-        await query.edit_message_text("📤 ফাইল সফলভাবে পাঠানো হয়েছে।")
+        # Check if file is video
+        if is_video(filename):
+            # Convert video to mp4 if not already mp4
+            if not filename.lower().endswith(".mp4"):
+                converted_path = os.path.join(tmpdir, "converted.mp4")
+                await message.reply("🔄 Converting video to mp4 format...")
+                converted = await asyncio.get_event_loop().run_in_executor(None, convert_to_mp4, download_path, converted_path)
+                if converted:
+                    download_path = converted_path
+                    filename = os.path.splitext(filename)[0] + ".mp4"
+                else:
+                    await message.reply("❌ Video conversion failed, uploading original file.")
+
+        thumb_path = user_data.get(message.from_user.id, {}).get('thumb')
+
+        await message.reply("📤 Uploading file to Telegram...")
+        await client.send_document(
+            chat_id=message.chat.id,
+            document=download_path,
+            thumb=thumb_path if thumb_path and os.path.exists(thumb_path) else None,
+            file_name=filename,
+            disable_notification=True,
+            progress=None
+        )
+
+        await message.reply("✅ Upload complete!")
 
     except Exception as e:
-        await query.edit_message_text(f"❌ সমস্যা হয়েছে: {e}")
+        await message.reply(f"❌ Error: {e}")
 
     finally:
-        if os.path.exists(destination_path):
-            os.remove(destination_path)
-
-    return ConversationHandler.END
-
-
-async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    await update.message.reply_text("বট বন্ধ করা হলো। /start দিয়ে আবার শুরু করুন।")
-    return ConversationHandler.END
-
-
-async def handle_webhook(request):
-    # Telegram থেকে POST করা আপডেট পড়বে
-    if request.match_info.get('token') != TOKEN:
-        return web.Response(status=403)
-
-    data = await request.json()
-    update = Update.de_json(data, bot)
-    await application.update_queue.put(update)
-    return web.Response(status=200)
-
-
-async def on_startup(app):
-    webhook_url = WEBHOOK_URL
-    await bot.set_webhook(webhook_url)
-
-
-async def on_shutdown(app):
-    await bot.delete_webhook()
-
+        shutil.rmtree(tmpdir, ignore_errors=True)
 
 if __name__ == "__main__":
-    bot = Bot(token=TOKEN)
-    application = ApplicationBuilder().bot(bot).build()
-
-    conv_handler = ConversationHandler(
-        entry_points=[CommandHandler("start", start)],
-        states={
-            WAITING_FOR_URL: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_url)],
-            WAITING_FOR_CHOICE: [CallbackQueryHandler(button_handler)],
-        },
-        fallbacks=[CommandHandler("cancel", cancel)],
-    )
-
-    application.add_handler(conv_handler)
-
-    # aiohttp ওয়েব সার্ভার সেটআপ
-    app = web.Application()
-    app.router.add_post(f"/{TOKEN}", handle_webhook)
-
-    app.on_startup.append(on_startup)
-    app.on_shutdown.append(on_shutdown)
-
-    # Render এ PORT এ লিসেন করবে
-    web.run_app(app, port=PORT)
+    print("Bot is starting...")
+    app.run()
