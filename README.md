@@ -1,30 +1,37 @@
-# 🎥 TA HD URL Uploader Bot
+# TA HD URL Uploader Bot
 
-A Telegram bot that uploads files/videos from **Direct URLs** and **Google Drive links** to Telegram.  
-Special feature:  
-- Any video format will be **auto-converted to `.mp4`** before upload.  
-- Non-video files are uploaded as-is with original name.  
-- Only admin users can use the bot.
+## Features
+- Upload from direct URL or Google Drive link.
+- Auto-convert any video format to mp4.
+- Rename files.
+- Set custom thumbnail.
+- Only Admins can use the bot.
 
----
+## Setup
 
-## ✨ Features
-- 📥 **Direct URL Upload**  
-- ☁ **Google Drive URL Upload**  
-- 🎞 **Auto Convert Videos to .mp4**  
-- 🖼 **Custom Thumbnail Support**  
-- 📝 **File Rename Option**  
-- 🔒 **Only Admin Access**  
-- 📌 **mp4 video upload only for videos, others keep original name**  
+1. Create bot token from [BotFather](https://t.me/BotFather).
+2. Get API_ID and API_HASH from [my.telegram.org](https://my.telegram.org).
+3. Find your Telegram user ID from [@userinfobot](https://t.me/userinfobot).
+4. Fill `.env` file or set environment variables in Render.
 
----
+## Deploy on Render
 
-## 🛠 Requirements
-- Python 3.11+
-- Telegram API ID & API Hash → [my.telegram.org](https://my.telegram.org) থেকে নিন  
-- Telegram Bot Token → [BotFather](https://t.me/BotFather) থেকে নিন  
-- Admin Telegram User ID → [@userinfobot](https://t.me/userinfobot) থেকে নিন  
+1. Fork or upload this repo to GitHub.
+2. Create a new Web Service on Render with this repo.
+3. Set environment variables: `BOT_TOKEN`, `API_ID`, `API_HASH`, `ADMIN_IDS`.
+4. Use default build and start commands.
+5. Deploy and run.
 
 ---
 
-## 📂 Project Structure
+## Commands
+
+- `/start` - Show welcome message.
+- `/rename newfilename.ext` - Rename next upload.
+- `/setthumb` - Reply to an image to set thumbnail.
+
+---
+
+## License
+
+MIT
